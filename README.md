@@ -4,7 +4,7 @@ A machine learning project that predicts used car prices in India based on featu
 
 ## Project Overview
 
-This project takes a raw used-car listings dataset, cleans and engineers features from it, trains several regression models, identifies the best-performing model, and serves it as a containerized prediction API. The exploratory work started in Jupyter notebooks and has since been ported into a full `src/` pipeline (ingestion → transformation → training → prediction), wrapped in a Flask API, and packaged into a Docker image — anyone can pull this repo and run it without installing Python or any dependencies locally.
+This project takes a raw used-car listings dataset, cleans and engineers features from it, trains several regression models, identifies the best-performing model, and serves it as a containerized prediction API. The exploratory work started in Jupyter notebooks and has since been ported into a full `src/` pipeline (ingestion → transformation → training → prediction), wrapped in a Flask API, and packaged into a Docker image, anyone can pull this repo and run it without installing Python or any dependencies locally.
 
 ## Dataset
 
@@ -169,6 +169,4 @@ The core pipeline, API, and containerization are done. What's left:
 
 - [ ] **Local web frontend** — a simple page (served either from Flask itself via a `templates/` folder, or a separate small frontend) where you can fill in a form with a car's details and get a predicted price back, running on `localhost`, instead of needing `curl`/Postman.
 - [ ] **Address the Random Forest train/test overfitting gap** — evaluate whether the tuned hyperparameters sufficiently close the gap (0.980 train vs. 0.814 test in the original notebook run), or whether further constraints (e.g. lower `max_depth`, higher `min_samples_leaf`) are needed.
-- [ ] **Residual analysis** — plot predicted vs. actual and residuals vs. predicted to check for systematic errors (e.g. underperformance on luxury/rare cars).
 - [ ] **Write unit tests** — add tests under `tests/` to confirm the loaded model and preprocessor produce consistent, expected predictions on fixed sample inputs.
-- [ ] **Documentation polish** — add a project description and topics to the GitHub repo's About section.
