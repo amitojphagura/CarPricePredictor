@@ -4,7 +4,7 @@ A machine learning project that predicts used car prices in India based on featu
 
 ## Project Overview
 
-This project takes a raw used-car listings dataset, cleans and engineers features from it, trains several regression models, and identifies the best-performing model for predicting price. It's built as a learning project covering the full pipeline from raw data to a tuned model, with containerized deployment as the next milestone.
+This project takes a raw used-car listings dataset, cleans and engineers features from it, trains several regression models, identifies the best-performing model, and serves it as a containerized prediction API. The exploratory work started in Jupyter notebooks and has since been ported into a full `src/` pipeline (ingestion → transformation → training → prediction), wrapped in a Flask API, and packaged into a Docker image — anyone can pull this repo and run it without installing Python or any dependencies locally.
 
 ## Dataset
 
@@ -46,25 +46,59 @@ Trained and compared the following regressors on Test R2:
 Used `RandomizedSearchCV` (5-fold CV, scoring on R2) to tune the Random Forest across `n_estimators`, `max_depth`, `min_samples_split`, `min_samples_leaf`, `max_features`, and `bootstrap`, aiming to narrow the overfitting gap while maintaining or improving test performance.
 
 ### Model Persistence
-The tuned model and the fitted preprocessor are saved separately with `joblib` so that new raw input can be transformed consistently at inference time:
-- `models/random_forest_model.pkl`
+The tuned model and the fitted preprocessor are saved separately with `pickle` so that new raw input can be transformed consistently at inference time:
+- `models/model.pkl`
 - `models/preprocessor.pkl`
+
+(`models/random_forest_model.pkl` is an earlier artifact saved directly from the notebook via `joblib` — superseded by `models/model.pkl`, kept around as a reference.)
+
+### Pipeline Scripts (`src/`)
+The notebook logic has been ported into a reusable pipeline:
+
+- **`src/components/data_ingestion.py`** — reads the raw CSV, applies the cleaning/feature-engineering steps from `exploration.ipynb` (drop `Model`/`Engine`, build `Volume`, parse `Power_bhp`/`Power_rpm`/`Torque_Nm`/`Torque_rpm` out of the free-text power/torque columns), and splits into train/test sets under `artifacts/`.
+- **`src/components/data_transformation.py`** — builds the same `OneHotEncoder` + `StandardScaler` `ColumnTransformer` from `modeltraining.ipynb` and saves it to `models/preprocessor.pkl`.
+- **`src/components/model_trainer.py`** — compares Linear/Lasso/Ridge/KNN/DecisionTree/RandomForest/AdaBoost, then runs a `RandomizedSearchCV` tuning pass on Random Forest (mirroring the notebook), saving the winner to `models/model.pkl`.
+- **`src/pipeline/train_pipeline.py`** — chains all three steps into one command (see "Retraining" below).
+- **`src/pipeline/predict_pipeline.py`** — `CustomData` (wraps a single car's raw fields into the right dataframe shape) and `PredictPipeline` (loads the saved model/preprocessor and returns a prediction).
+- **`src/exception.py`, `src/logger.py`, `src/utils.py`** — shared error handling, logging, and save/load helpers used throughout.
+
+### Serving API (`app/`)
+**`app/main.py`** is a small Flask app exposing:
+- `GET /` — health check, lists the required prediction fields.
+- `POST /predict` — accepts a JSON body with the fields below and returns `{"predicted_price": ...}`.
+
+Required fields: `make`, `year`, `kilometer`, `fuel_type`, `transmission`, `location`, `color`, `owner`, `seller_type`, `drivetrain`, `seating_capacity`, `fuel_tank_capacity`, `volume`, `power_bhp`, `power_rpm`, `torque_nm`, `torque_rpm`.
+
+(`app.py` at the project root is just a `python app.py` convenience shim that runs the same app — the real implementation lives in `app/main.py` since a top-level `app.py` and an `app/` package can't coexist under the same import name.)
+
+### Containerization
+A `Dockerfile` packages the app, the pipeline, the saved model, and all dependencies into a single image built on `python:3.12-slim`, served via `gunicorn`. No local Python install is required to run it — just Docker.
 
 ## Project Structure
 
 ```
 CarPricePredictor/
-├── app/                  # Serving/inference code (in progress)
-├── data/carcsvdata/      # Raw and cleaned datasets
-├── models/               # Saved model and preprocessor (.pkl)
-├── notebooks/            # exploration.ipynb, modeltraining.ipynb
-├── src/                  # Reusable pipeline modules (in progress)
-├── tests/                # Unit tests (in progress)
+├── app/
+│   ├── main.py           # Flask app (GET /, POST /predict)
+│   └── __init__.py
+├── app.py                 # convenience entrypoint: `python app.py`
+├── data/carcsvdata/        # raw and cleaned datasets
+├── models/                 # saved model.pkl + preprocessor.pkl
+├── notebooks/               # exploration.ipynb, modeltraining.ipynb (original analysis)
+├── src/
+│   ├── components/          # data_ingestion.py, data_transformation.py, model_trainer.py
+│   ├── pipeline/             # train_pipeline.py, predict_pipeline.py
+│   ├── exception.py
+│   ├── logger.py
+│   └── utils.py
+├── tests/                   # unit tests (not yet written)
+├── Dockerfile
+├── .dockerignore
 ├── requirements.txt
 └── README.md
 ```
 
-## Setup
+## Setup (running locally, without Docker)
 
 ```bash
 git clone https://github.com/amitojphagura/CarPricePredictor.git
@@ -75,18 +109,66 @@ venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 ```
 
-Open the `notebooks/` folder in VS Code or Jupyter to explore the analysis and training process.
+## Making Predictions
+
+There are three ways to get a prediction out of this project, from quickest to most portable.
+
+### 1. Directly in Python (no server)
+
+```python
+from src.pipeline.predict_pipeline import CustomData, PredictPipeline
+
+data = CustomData(
+    make="Honda", year=2017, kilometer=87150, fuel_type="Petrol",
+    transmission="Manual", location="Pune", color="Grey", owner="First",
+    seller_type="Corporate", drivetrain="FWD", seating_capacity=5.0,
+    fuel_tank_capacity=35.0, volume=10088.32, power_bhp=87.0,
+    power_rpm=6000.0, torque_nm=109.0, torque_rpm=4500.0,
+)
+prediction = PredictPipeline().predict(data.get_data_as_data_frame())
+print(prediction[0])
+```
+
+Run from the project root (with the venv activated) so the relative `models/` paths resolve correctly.
+
+### 2. Local Flask server
+
+```bash
+python app.py
+```
+
+Then, from another terminal:
+
+```bash
+curl http://localhost:5000/
+curl -X POST http://localhost:5000/predict -H "Content-Type: application/json" -d "{\"make\": \"Honda\", \"year\": 2017, \"kilometer\": 87150, \"fuel_type\": \"Petrol\", \"transmission\": \"Manual\", \"location\": \"Pune\", \"color\": \"Grey\", \"owner\": \"First\", \"seller_type\": \"Corporate\", \"drivetrain\": \"FWD\", \"seating_capacity\": 5.0, \"fuel_tank_capacity\": 35.0, \"volume\": 10088.32, \"power_bhp\": 87.0, \"power_rpm\": 6000.0, \"torque_nm\": 109.0, \"torque_rpm\": 4500.0}"
+```
+
+### 3. Docker (no Python install needed at all)
+
+```bash
+docker build -t car-price-api .
+docker run -p 5000:5000 car-price-api
+```
+
+Then hit it exactly the same way as option 2, via `curl` (or a browser for `GET /`) at `http://localhost:5000`.
+
+## Retraining the Model
+
+To rerun the full ingestion → transformation → training pipeline (e.g. after changing the data or the model grids):
+
+```bash
+python -m src.pipeline.train_pipeline
+```
+
+This regenerates `models/model.pkl` and `models/preprocessor.pkl`, and prints the final test R² score. Note this runs the full multi-model comparison plus a `RandomizedSearchCV` tuning pass, so it takes a few minutes rather than seconds.
 
 ## Future Work
 
-This project is not yet complete. Remaining steps:
+The core pipeline, API, and containerization are done. What's left:
 
-- [ ] **Address the Random Forest train/test overfitting gap** — evaluate whether the tuned hyperparameters from `RandomizedSearchCV` sufficiently close the gap, or whether further constraints (e.g. lower `max_depth`, higher `min_samples_leaf`) are needed.
+- [ ] **Local web frontend** — a simple page (served either from Flask itself via a `templates/` folder, or a separate small frontend) where you can fill in a form with a car's details and get a predicted price back, running on `localhost`, instead of needing `curl`/Postman.
+- [ ] **Address the Random Forest train/test overfitting gap** — evaluate whether the tuned hyperparameters sufficiently close the gap (0.980 train vs. 0.814 test in the original notebook run), or whether further constraints (e.g. lower `max_depth`, higher `min_samples_leaf`) are needed.
 - [ ] **Residual analysis** — plot predicted vs. actual and residuals vs. predicted to check for systematic errors (e.g. underperformance on luxury/rare cars).
-- [ ] **Test unseen-category handling** — confirm the pipeline behaves sensibly on genuinely new categorical values not seen during training.
-- [ ] **Refactor notebooks into `.py` scripts** — move data loading, preprocessing, training, and evaluation logic out of Jupyter notebooks and into modular scripts under `src/` (e.g. `data.py`, `model.py`, `train.py`, `predict.py`).
-- [ ] **Build an inference interface** — decide on and implement a serving method (e.g. a FastAPI or Flask app under `app/serve.py`) that loads the saved model and preprocessor and returns predictions for new input.
 - [ ] **Write unit tests** — add tests under `tests/` to confirm the loaded model and preprocessor produce consistent, expected predictions on fixed sample inputs.
-- [ ] **Containerize the application** — write a `Dockerfile` and, if needed, a `docker-compose.yml` to package the app, model, and dependencies into a deployable container.
-- [ ] **Finalize `requirements.txt`** — ensure it reflects an exact, pinned set of dependencies (via `pip freeze`) matching what the saved model was trained and tested with.
-- [ ] **Documentation polish** — add a project description and topics to the GitHub repo's About section, and expand this README with example predictions once the inference interface is built.
+- [ ] **Documentation polish** — add a project description and topics to the GitHub repo's About section.
